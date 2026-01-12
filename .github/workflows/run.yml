@@ -3,8 +3,6 @@ on:
   schedule:
     - cron: '0 21 * * 0-4'
     - cron: '0 9 * * 1-5'
-    - cron: '0 21 * * 6'
-    - cron: '0 9 * * 0'
   workflow_dispatch:
 
 jobs:
@@ -17,16 +15,18 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.11' # 3.10から3.11へアップグレード
+          python-version: '3.11'
       - name: Install dependencies
-        run: pip install yfinance newsapi-python google-generativeai discord-webhook pandas
+        run: |
+          pip install yfinance newsapi-python discord-webhook pandas
+          pip install -U google-genai  # 新しい公式ライブラリ
       - name: Run Script
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: python main.py
-      - name: Commit and Push Prediction
+      - name: Commit and Push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
