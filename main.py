@@ -3,98 +3,133 @@ import requests
 import datetime
 import pytz
 import yfinance as yf
+import pandas as pd
 from newsapi import NewsApiClient
 from discord_webhook import DiscordWebhook
 
-# 設定
+# === 設定 ===
 OPENROUTER_API_KEY = os.getenv("GEMINI_API_KEY") 
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 
-def get_market_data():
-    """NVIDIAと半導体(SOXL等)のデータを取得"""
-    tickers = {"NVDA": "NVIDIA", "^SOX": "PHLX Semiconductor"}
-    data_str = ""
+def get_detailed_market_data():
+    """NVDAと半導体指数のテクニカルデータを取得"""
+    tickers = {"NVDA": "NVIDIA", "^SOX": "PHLX Semiconductor Index"}
+    report_data = ""
     for ticker, name in tickers.items():
-        t = yf.Ticker(ticker)
-        hist = t.history(period="2d")
-        if len(hist) >= 2:
-            prev = hist['Close'].iloc[-2]
-            curr = hist['Close'].iloc[-1]
-            diff = ((curr - prev) / prev) * 100
-            vol = hist['Volume'].iloc[-1]
-            data_str += f"- {name}({ticker}): 終値 {curr:.2f} ({diff:+.2f}%) / 出来高: {vol}\n"
-    return data_str
+        try:
+            t = yf.Ticker(ticker)
+            # 直近5日間のデータを取得してテクニカル計算
+            hist = t.history(period="5d")
+            if len(hist) < 2: continue
+            
+            curr = hist.iloc[-1]
+            prev = hist.iloc[-2]
+            
+            change_pct = ((curr['Close'] - prev['Close']) / prev['Close']) * 100
+            vol_ratio = (curr['Volume'] / hist['Volume'].mean()) * 100
+            
+            report_data += f"\n【{name} ({ticker})】\n"
+            report_data += f"- 現在値: ${curr['Close']:.2f} (前日比: {change_pct:+.2f}%)\n"
+            report_data += f"- 出来高: {curr['Volume']:,} (平均比: {vol_ratio:.1f}%)\n"
+            report_data += f"- 高値/安値: ${curr['High']:.2f} / ${curr['Low']:.2f}\n"
+            # テクニカル視点 (簡易RSI)
+            report_data += f"- 直近トレンド: {'強気' if curr['Close'] > hist['Close'].mean() else '調整気味'}\n"
+        except:
+            report_data += f"\n{name}のデータ取得失敗\n"
+    return report_data
+
+def fetch_news():
+    """多角的なニュース収集"""
+    newsapi = NewsApiClient(api_key=NEWS_API_KEY)
+    topics = {
+        "Market": "US Stock Market",
+        "Politics": "US Politics Biden Trump China policy",
+        "AI/Tech": "NVIDIA AI Semiconductor",
+        "Economic": "FED Interest rates Inflation"
+    }
+    collected = ""
+    for category, query in topics.items():
+        try:
+            res = newsapi.get_everything(q=query, language='en', sort_by='relevancy', page_size=4)
+            for art in res.get('articles', []):
+                collected += f"[{category}] {art['title']} - {art.get('description', '')[:100]}...\n"
+        except: pass
+    return collected
 
 def main():
-    # 日本時間の現在時刻を取得
+    # 日本時間 (JST) 判定
     jst = pytz.timezone('Asia/Tokyo')
     now = datetime.datetime.now(jst)
-    day_of_week = now.strftime('%A') # Monday, Sunday...
+    day = now.strftime('%A')
     hour = now.hour
 
-    # 1. ニュース取得（広範囲に検索）
-    newsapi = NewsApiClient(api_key=NEWS_API_KEY)
-    q_list = ["US Stock Market", "NVIDIA", "Semiconductor", "US Politics", "China policy AI"]
-    raw_news = ""
-    for q in q_list:
-        res = newsapi.get_everything(q=q, language='en', sort_by='relevancy', page_size=5)
-        for art in res.get('articles', []):
-            raw_news += f"[{q}] {art['title']}: {art.get('description', '')}\n"
+    # 1. データ収集
+    market_info = get_detailed_market_data()
+    news_info = fetch_news()
 
-    # 2. 市場データの取得
-    market_stats = get_market_data()
-
-    # 3. 配信タイミングによるモード判定
-    if day_of_week == "Sunday":
-        mode = "【日曜版：今週の振り返り総集編】1週間の全ニュースと値動きを徹底解剖"
-    elif 5 <= hour <= 9:
-        mode = "【平日朝：前夜の答え合わせと分析】予想の的中検証と重要ニュースの織り込み度"
+    # 2. 配信モードの決定
+    if day == "Sunday":
+        mode = "日曜版：【今週の総括】全ニュースと値動きの徹底解剖"
+        specific_instruction = "今週1週間のトレンドを振り返り、来週に向けた長期的な展望を4000文字以上で論じてください。"
+    elif 5 <= hour <= 10:
+        mode = "平日朝：【答え合わせと分析】昨夜の予想検証と織り込み度チェック"
+        specific_instruction = "昨夜の市場でどのニュースが『織り込み済み』で、どのニュースが『サプライズ』だったかを峻別してください。"
     else:
-        mode = "【平日夕：今夜のシナリオ予想】トレンドと材料から読む期待値"
+        mode = "平日夕：【今夜のシナリオ予想】材料から読む期待値とトレンド"
+        specific_instruction = "今夜の米市場開場に向けて、メイン・強気・弱気の3シナリオを具体的な理由と共に提示してください。"
 
-    # 4. AIへの超詳細プロンプト
+    # 3. AIプロンプト（条件をすべて凝縮）
     prompt = f"""
-あなたはプロの米国株シニアアナリストです。以下の情報を元に、読むのに10分かかる長文（約4000文字以上）の投資レポートを作成してください。
+あなたは米国株専門のシニアストラテジストとして、投資家が10分かけて読むに値する、非常に濃密で情熱的なレポートを作成してください。
 
-モード：{mode}
-市場データ：{market_stats}
-最新ニュース：{raw_news}
+【本日のモード】: {mode}
 
-【構成案・必須項目】
-1. **影響度ランキング**：ニュースを市場への影響度が高い順（NVDA/半導体/金利/政治等）に格付けし、理由を添える。
-2. **NVIDIA単独分析**：前日比、値動き、出来高のテクニカル分析。
-3. **半導体セクター分析**：NVIDIA以外の半導体全体の動向。
-4. **米国政治・対中・AIセクション**：政治家の発言、対中政策、AI規制等の深掘り。
-5. **最新ニュース一覧**：実際のヘッドラインを整理。
-6. **答え合わせと予測**：
-   - 朝なら：前夜の予想の的中判定、織り込み済みだったニュース、無視されたニュースの特定。
-   - 夕方なら：今夜の具体的な値動きシナリオ（強気・弱気・横ばい）とその理由。
-7. **コラム**：株式市場の裏側や、10分間飽きさせない楽しいトーンでの解説。
+【入力データ】:
+市場数値: {market_info}
+最新ヘッドライン: {news_info}
 
-条件：絵文字を多用し、情熱的かつ冷静な分析を行うこと。分量は非常に長く、専門的であること。
+【必須構成（以下の順序で別枠を設けること）】:
+1. **影響度ランキング**：収集したニュースを、株式市場への影響度が高い順（NVDA/半導体/金利/政治等）に格付けし、論理的な理由を添える。
+2. **NVIDIA & 半導体別枠分析**：NVDAとSOX指数の前日比、出来高、値動きをテクニカル視点（レジスタンス、支持線等）で振り返る。
+3. **政治・地政学・AI別枠**：政治家の発言、対中政策、AI規制の動向。
+4. **最新ニュース一覧**：実際のヘッドラインまとめ。
+5. **答え合わせ or 予測（重要）**:
+   - 朝：前夜の予想の的中判定と「聞かなかったニュース（無視された材料）」の分析。
+   - 夕：今夜のトレンド、注目経済指標を踏まえた具体的な値動き予想。
+6. **投資シナリオ**：必ず理由を付随させ、論理的な結論を出すこと。
+
+【スタイル】:
+- 文字数：4000文字以上を目指す長文。
+- 絵文字を多用し、エンターテインメント性とプロの分析を両立させる。
+- 曖昧な表現を避け、プロフェッショナルな断定と予測を行う。
 """
 
-    # 5. OpenRouter呼び出し
-    res = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "HTTP-Referer": "https://github.com/my-stock-ai"
-        },
-        json={
-            "model": "google/gemini-2.0-flash-exp:free",
-            "messages": [{"role": "user", "content": prompt}]
-        }
-    )
-    
-    report = res.json()['choices'][0]['message']['content']
+    # 4. OpenRouter呼び出し
+    try:
+        res = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://github.com/my-stock-ai"
+            },
+            json={
+                "model": "google/gemini-2.0-flash-exp:free",
+                "messages": [{"role": "user", "content": prompt}]
+            }
+        )
+        report = res.json()['choices'][0]['message']['content']
+    except Exception as e:
+        report = f"AI生成エラー: {str(e)}"
 
-    # 6. Discord送信（長文なので分割して送信）
+    # 5. Discord送信 (2000文字制限対応の分割送信)
     if DISCORD_WEBHOOK_URL:
-        # 2000文字制限対策
-        for i in range(0, len(report), 1900):
-            webhook = DiscordWebhook(url=DISCORD_WEBHOOK_URL, content=report[i:i+1900])
+        # ヘッダーを付けて分割
+        chunks = [report[i:i+1900] for i in range(0, len(report), 1900)]
+        for i, chunk in enumerate(chunks):
+            prefix = f"【{mode} - Part {i+1}/{len(chunks)}】\n" if i == 0 else ""
+            webhook = DiscordWebhook(url=DISCORD_WEBHOOK_URL, content=prefix + chunk)
             webhook.execute()
 
 if __name__ == "__main__":
