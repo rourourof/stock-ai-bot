@@ -10,25 +10,25 @@ NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 
 def main():
-    # 1. ニュースの取得
+    # 1. ニュースの取得（負荷を減らすため3件に限定）
     newsapi = NewsApiClient(api_key=NEWS_API_KEY)
     all_news = ""
     try:
-        result = newsapi.get_everything(q="US Stock Market news", language='en', sort_by='relevancy', page_size=5)
+        # クエリを絞り、取得件数を3件にする
+        result = newsapi.get_everything(q="US Stock Market", language='en', sort_by='relevancy', page_size=3)
         for article in result.get('articles', []):
             all_news += f"- {article['title']}\n"
     except:
-        all_news = "ニュース取得に失敗しました。"
+        all_news = "ニュース取得制限中"
 
-    # 2. Gemini 2.0 Flash を直接叩く (v1安定版URLを使用)
-    # 404エラーの原因である v1beta を避け、確実に存在する v1 エンドポイントを叩きます
-    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+    # 2. Gemini 1.5 Flash を使用（2.0よりも無料枠が安定しています）
+    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
     
     headers = {'Content-Type': 'application/json'}
     payload = {
         "contents": [{
             "parts": [{
-                "text": f"以下の米国株ニュースを日本語で要約し、投資コメントを絵文字付きで作ってください。：\n{all_news}"
+                "text": f"以下の米国株ニュースを日本語で3行程度に要約し、投資コメントを短く作成して：\n{all_news}"
             }]
         }]
     }
@@ -40,8 +40,12 @@ def main():
         if "candidates" in res_json:
             report = res_json["candidates"][0]["content"]["parts"][0]["text"]
         else:
-            # エラー内容を詳しく表示（デバッグ用）
-            report = f"AIエラー: {res_json.get('error', {}).get('message', '不明なエラー')}\nコード: {res_json.get('error', {}).get('code', 'なし')}"
+            # 429エラーが出た場合の日本語メッセージ
+            error_msg = res_json.get('error', {}).get('message', '')
+            if "429" in str(response.status_code):
+                report = "【制限エラー】Gemini APIの無料枠の上限に達しました。10分〜1時間ほど時間を置いてから再度実行してください。"
+            else:
+                report = f"AIエラー: {error_msg}"
     except Exception as e:
         report = f"システムエラー: {str(e)}"
 
