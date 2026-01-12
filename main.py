@@ -10,40 +10,35 @@ NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 
 def main():
-    # 1. ニュースの取得
+    # 1. ニュースの取得（トークン節約のため件数を絞る）
     newsapi = NewsApiClient(api_key=NEWS_API_KEY)
-    queries = ["US Stock Market", "NVIDIA"]
+    queries = ["US Stock Market"]
     all_news = ""
     
     try:
-        for q in queries:
-            result = newsapi.get_everything(q=q, language='en', sort_by='relevancy', page_size=2)
-            for article in result.get('articles', []):
-                all_news += f"- {article['title']}\n"
-    except Exception:
-        all_news = "ニュースの取得に失敗しました。"
+        result = newsapi.get_everything(q="US Stock Market", language='en', sort_by='relevancy', page_size=5)
+        for article in result.get('articles', []):
+            all_news += f"- {article['title']}\n"
+    except:
+        all_news = "ニュース取得制限中"
 
-    # 2. Gemini AI による分析（404エラー対策）
+    # 2. Gemini AI による分析（1.5-flashを明示的に指定）
     client = genai.Client(api_key=GEMINI_API_KEY)
-    prompt = f"以下の米国株ニュースを日本語で要約し、投資家へのアドバイスを絵文字付きで作成して：\n{all_news}"
+    prompt = f"以下の米国株ニュースを日本語で3行で要約し、投資コメントを絵文字付きで作成して：\n{all_news}"
     
     try:
-        # SDKの内部挙動に合わせて、あえて 'models/' を付けないシンプルな名前で実行します。
-        # もしこれでもダメな場合は 'gemini-2.0-flash' に自動で切り替わるようにします。
-        try:
-            response = client.models.generate_content(
-                model='gemini-1.5-flash', 
-                contents=prompt
-            )
-        except:
-            # 万が一の予備モデル指定
-            response = client.models.generate_content(
-                model='gemini-2.0-flash', 
-                contents=prompt
-            )
+        # gemini-2.0が制限されているため、安定している gemini-1.5-flash を使用
+        response = client.models.generate_content(
+            model='gemini-1.5-flash', 
+            contents=prompt
+        )
         report = response.text
     except Exception as e:
-        report = f"AI分析エラー詳細: {str(e)}"
+        # クォータエラーが起きた場合の説明を分かりやすく
+        if "429" in str(e):
+            report = "【エラー】Gemini APIの無料枠制限（1分間あたりの回数制限）に達しました。少し時間を置いてから再度実行してください。"
+        else:
+            report = f"AI分析エラー: {str(e)}"
 
     # 3. Discordへの通知
     webhook = DiscordWebhook(url=DISCORD_WEBHOOK_URL, content=report)
