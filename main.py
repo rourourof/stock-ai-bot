@@ -23,7 +23,7 @@ def get_market_data():
             curr = hist.iloc[-1]
             prev = hist.iloc[-2]
             change_pct = ((curr['Close'] - prev['Close']) / prev['Close']) * 100
-            report_data += f"\n【{name}】価格: {curr['Close']:.2f} ({change_pct:+.2f}%)\n"
+            report_data += f"- {name}: {curr['Close']:.2f} ({change_pct:+.2f}%)\n"
         except: pass
     return report_data
 
@@ -32,30 +32,38 @@ def fetch_news():
     jst = pytz.timezone('Asia/Tokyo')
     three_days_ago = (datetime.datetime.now(jst) - datetime.timedelta(days=3)).strftime('%Y-%m-%d')
     collected = ""
-    for q in ["NVIDIA AI", "US Market"]:
+    for q in ["NVIDIA AI", "US Stock Market"]:
         try:
-            res = newsapi.get_everything(q=q, language='en', sort_by='publishedAt', from_param=three_days_ago, page_size=3)
+            res = newsapi.get_everything(q=q, language='en', sort_by='publishedAt', from_param=three_days_ago, page_size=2)
             for art in res.get('articles', []):
-                collected += f"■{art['title']}\n{art.get('description','')[:200]}\n\n"
+                collected += f"■{art['title']}\n{art.get('description','')[:150]}\n"
         except: pass
     return collected
 
 def call_ai(prompt):
-    """確実に回答を得るための共通関数"""
-    try:
-        res = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"},
-            json={
-                "model": "google/gemini-2.0-flash-exp:free",
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.7
-            },
-            timeout=120
-        )
-        return res.json()['choices'][0]['message']['content']
-    except:
-        return "（このセクションの生成に失敗しました）"
+    """リトライ機能を備えたAI呼び出し"""
+    for i in range(2): # 失敗しても1度だけ自動リトライ
+        try:
+            res = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json", "HTTP-Referer": "https://github.com/my-stock-ai"},
+                json={
+                    "model": "google/gemini-2.0-flash-exp:free",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.7
+                },
+                timeout=90
+            )
+            data = res.json()
+            if 'choices' in data:
+                return data['choices'][0]['message']['content']
+            else:
+                print(f"Error: {data}")
+                time.sleep(40) # 失敗した場合は長めに待機
+        except Exception as e:
+            print(f"Exception: {e}")
+            time.sleep(40)
+    return "（このセクションは現在AIが混雑しており取得できませんでした。時間をおいて再実行してください）"
 
 def main():
     jst = pytz.timezone('Asia/Tokyo')
@@ -64,28 +72,28 @@ def main():
     market_info = get_market_data()
     news_info = fetch_news()
 
-    # --- セクション1: ニュース分析とランキング ---
-    prompt1 = f"今日は{now.strftime('%Y/%m/%d')}です。最新ニュースから市場影響度ランキングを2000文字以上で詳細に解説せよ。絵文字多用。\n{news_info}"
+    # --- セクション1: ニュース分析 (文字数指示をマイルドに) ---
+    prompt1 = f"プロの米国株アナリストとして、最新ニュースから市場影響度ランキングを解説せよ。各項目を非常に詳しく、絵文字を使い情熱的に書くこと。日付は{now.strftime('%Y/%m/%d')}。情報：\n{news_info}"
     part1 = call_ai(prompt1)
-    time.sleep(20) # 制限回避
+    time.sleep(45) # 無料枠のレート制限回避のため長めに待機
 
-    # --- セクション2: NVIDIA & 半導体・政治・AI ---
-    prompt2 = f"NVIDIAと半導体指数のテクニカル分析、および米国政治・AI・対中政策の動向を別枠で2000文字以上で執筆せよ。\n{market_info}"
+    # --- セクション2: NVIDIA・政治・AI ---
+    prompt2 = f"NVIDIAと半導体指数のテクニカル分析、および米国政治・AI・対中政策の動向をプロの視点で別枠を設けて詳しく執筆せよ。\n{market_info}"
     part2 = call_ai(prompt2)
-    time.sleep(20)
+    time.sleep(45)
 
     # --- セクション3: 答え合わせ または 予想 ---
-    mode = "【朝の答え合わせと要因分析】" if is_morning else "【夕方の今夜シナリオ予想】"
-    prompt3 = f"{mode}を2000文字以上で執筆せよ。無視された材料や先物動向を深く論じること。\n{market_info}"
+    mode = "朝の答え合わせと要因分析" if is_morning else "夕方の今夜シナリオ予想"
+    prompt3 = f"米国株アナリストとして、現在のデータから【{mode}】を執筆せよ。無視された材料や先物の動きを深く鋭く論じること。\n{market_info}"
     part3 = call_ai(prompt3)
 
-    full_report = f"📊 **US Market Professional Report**\n\n{part1}\n\n{part2}\n\n{part3}"
+    full_report = f"📊 **US Market Strategy Report**\n\n{part1}\n\n{part2}\n\n{part3}"
 
     if DISCORD_WEBHOOK_URL:
         chunks = [full_report[i:i+1800] for i in range(0, len(full_report), 1800)]
         for chunk in chunks:
             requests.post(DISCORD_WEBHOOK_URL, json={"content": chunk})
-            time.sleep(1)
+            time.sleep(2)
 
 if __name__ == "__main__":
     main()
