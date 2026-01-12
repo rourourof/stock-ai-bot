@@ -12,24 +12,20 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v3
-
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
-
       - name: Install dependencies
         run: |
           pip install yfinance newsapi-python discord-webhook pandas
-          pip install -U google-genai
-
+          pip install -U "google-genai>=0.1.0"
       - name: Run Script
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: python main.py
-
       - name: Commit and Push
         run: |
           git config user.name "github-actions[bot]"
