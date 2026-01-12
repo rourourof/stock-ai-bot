@@ -5,7 +5,7 @@ on:
     - cron: '0 9 * * 1-5'
     - cron: '0 21 * * 6'
     - cron: '0 9 * * 0'
-  workflow_dispatch:      # ←これがボタンを出す魔法の言葉です
+  workflow_dispatch:
 
 jobs:
   build:
@@ -30,12 +30,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add prediction.json |
-
-| true
-          git commit -m "Update prediction" |
-
-| true
-          git push |
-
-| true
+          git add prediction.json || true
+          git commit -m "Update prediction" || true
+          git push || true
