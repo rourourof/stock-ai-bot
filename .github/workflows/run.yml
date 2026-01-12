@@ -1,17 +1,17 @@
 name: US Stock AI Report
 on:
   schedule:
-    - cron: '0 21 * * 0-4' # 平日 06:00 JST
-    - cron: '0 9 * * 1-5'  # 平日 18:00 JST
-    - cron: '0 21 * * 6'   # 日曜 06:00 JST
-    - cron: '0 9 * * 0'    # 日曜 18:00 JST
-  workflow_dispatch:      # ←これを目印に追加！手動実行ボタンを出します
+    - cron: '0 21 * * 0-4'
+    - cron: '0 9 * * 1-5'
+    - cron: '0 21 * * 6'
+    - cron: '0 9 * * 0'
+  workflow_dispatch:      # ←これがボタンを出す魔法の言葉です
 
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write 
+      contents: write
     steps:
       - uses: actions/checkout@v3
       - name: Set up Python
