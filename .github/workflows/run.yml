@@ -1,15 +1,17 @@
 name: US Stock AI Report
 on:
   schedule:
-    - cron: '0 21 * * 0-4' # 平日 06:00 JST (21:00 UTC)
-    - cron: '0 9 * * 1-5'  # 平日 18:00 JST (09:00 UTC)
+    - cron: '0 21 * * 0-4' # 平日 06:00 JST
+    - cron: '0 9 * * 1-5'  # 平日 18:00 JST
     - cron: '0 21 * * 6'   # 日曜 06:00 JST
     - cron: '0 9 * * 0'    # 日曜 18:00 JST
+  workflow_dispatch:      # ←これを目印に追加！手動実行ボタンを出します
+
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # 答え合わせ用にファイルを保存する権限
+      contents: write 
     steps:
       - uses: actions/checkout@v3
       - name: Set up Python
@@ -17,7 +19,7 @@ jobs:
         with:
           python-version: '3.10'
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install yfinance newsapi-python google-generativeai discord-webhook pandas
       - name: Run Script
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
