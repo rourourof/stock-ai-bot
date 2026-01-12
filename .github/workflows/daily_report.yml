@@ -1,26 +1,26 @@
-name: Market Report Bot
+name: Professional Market Report
 
 on:
   schedule:
-    # 日本時間 6:00 (UTC 21:00 前日)
+    # 日本時間 06:00 (UTC 21:00 前日)
     - cron: '0 21 * * *'
-    # 日本時間 18:00 (UTC 9:00)
+    # 日本時間 18:00 (UTC 09:00)
     - cron: '0 9 * * *'
-  workflow_dispatch: # 手動実行用
+  workflow_dispatch:
 
 jobs:
-  build:
+  run-bot:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.9'
+          python-version: '3.11'
       - name: Install dependencies
         run: |
-          pip install requests newsapi-python discord-webhook yfinance pytz
-      - name: Run bot
+          pip install requests newsapi-python discord-webhook yfinance pytz pandas
+      - name: Run script
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
