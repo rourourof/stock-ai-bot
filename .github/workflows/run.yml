@@ -1,0 +1,39 @@
+name: US Stock AI Report
+on:
+  schedule:
+    - cron: '0 21 * * 0-4' # 平日 06:00 JST (21:00 UTC)
+    - cron: '0 9 * * 1-5'  # 平日 18:00 JST (09:00 UTC)
+    - cron: '0 21 * * 6'   # 日曜 06:00 JST
+    - cron: '0 9 * * 0'    # 日曜 18:00 JST
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # 答え合わせ用にファイルを保存する権限
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run Script
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python main.py
+      - name: Commit and Push Prediction
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add prediction.json |
+
+| true
+          git commit -m "Update prediction" |
+
+| true
+          git push |
+
+| true
