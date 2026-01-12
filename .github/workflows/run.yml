@@ -19,7 +19,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install yfinance newsapi-python discord-webhook pandas
-          pip install -U google-generativeai # こちらの安定版を使用
+          pip install -U google-generativeai
       - name: Run Script
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
