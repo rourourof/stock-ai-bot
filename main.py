@@ -9,9 +9,8 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 
-# 【重要】APIバージョンを安定版の 'v1' に強制指定して初期化
-from google.generativeai import client
-genai.configure(api_key=GEMINI_API_KEY, transport='grpc')
+# Geminiの初期化
+genai.configure(api_key=GEMINI_API_KEY)
 
 def main():
     # 1. ニュースの取得
@@ -24,29 +23,29 @@ def main():
     except:
         all_news = "ニュース取得制限中"
 
-    # 2. Gemini AI による分析（安定版 v1 を使用）
+    # 2. Gemini AI による分析
     try:
-        # モデル名の前に何もつけず、もっとも標準的な名前で呼び出します
-        model = genai.GenerativeModel(
-            model_name='gemini-1.5-flash'
-        )
-        
-        prompt = f"以下の米国株ニュースを日本語で簡潔に要約し、投資アドバイスを絵文字付きで作成して：\n{all_news}"
-        
-        # 実行
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        prompt = f"以下の米国株ニュースを日本語で要約し、投資アドバイスを絵文字付きで作成して：\n{all_news}"
         response = model.generate_content(prompt)
         report = response.text
     except Exception as e:
-        # これでもダメな場合、利用可能なモデル名をログに出力してDiscordに送る
-        try:
-            available_models = [m.name for m in genai.list_models()]
-            report = f"AI分析エラー。利用可能モデルリスト: {available_models} \n詳細: {str(e)}"
-        except:
-            report = f"AI分析エラー詳細: {str(e)}"
+        report = f"AI分析エラー: {str(e)}"
 
-    # 3. Discordへの通知
+    # 3. Discordへの通知（送信失敗時にエラーを出すように変更）
+    if not DISCORD_WEBHOOK_URL:
+        print("エラー: DISCORD_WEBHOOK_URL が設定されていません。")
+        return
+
+    print(f"Discordに送信中... 内容: {report[:20]}...") # ログに一部表示
+    
     webhook = DiscordWebhook(url=DISCORD_WEBHOOK_URL, content=report)
-    webhook.execute()
+    response = webhook.execute()
+    
+    if response:
+        print("Discordへの送信に成功しました！")
+    else:
+        print("Discordへの送信に失敗しました。Webhook URLが正しいか確認してください。")
 
 if __name__ == "__main__":
     main()
