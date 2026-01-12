@@ -12,6 +12,9 @@ OPENROUTER_API_KEY = os.getenv("GEMINI_API_KEY")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 
+# 無料で最も安定しているLlama 3.3を指定
+MODEL = "meta-llama/llama-3.3-70b-instruct:free"
+
 def get_detailed_market_data(is_morning):
     targets = {"NVDA": "NVIDIA", "^SOX": "半導体指数", "ES=F": "S&P500先物", "NQ=F": "ナスダック100先物"}
     report_data = ""
@@ -29,17 +32,17 @@ def get_detailed_market_data(is_morning):
 
 def fetch_news_detailed():
     newsapi = NewsApiClient(api_key=NEWS_API_KEY)
-    queries = ["NVIDIA AI", "US Stock Market", "US Politics"]
+    # 検索を絞ってトークン（文字数）を節約
+    queries = ["NVIDIA AI", "US Market"]
     collected = ""
     jst = pytz.timezone('Asia/Tokyo')
     for q in queries:
         try:
-            # ニュース件数を少し減らして安定性を向上
-            res = newsapi.get_everything(q=q, language='en', sort_by='publishedAt', page_size=2)
+            res = newsapi.get_everything(q=q, language='en', sort_by='relevancy', page_size=2)
             for art in res.get('articles', []):
                 utc_dt = datetime.datetime.strptime(art['publishedAt'], '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=pytz.utc)
                 date_str = utc_dt.astimezone(jst).strftime('%m/%d %H:%M')
-                collected += f"■{date_str} {art['title']}\n{art.get('description','')[:200]}\n\n"
+                collected += f"■{date_str} {art['title']}\n{art.get('description','')[:150]}\n\n"
         except: pass
     return collected
 
@@ -53,9 +56,9 @@ def call_ai(prompt):
                 "HTTP-Referer": "https://github.com/my-stock-ai"
             },
             json={
-                "model": "google/gemini-2.0-flash-exp:free",
+                "model": MODEL,
                 "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.8
+                "temperature": 0.7
             },
             timeout=180
         )
@@ -63,8 +66,7 @@ def call_ai(prompt):
         if 'choices' in data:
             return data['choices'][0]['message']['content']
         else:
-            # エラーメッセージを具体的に出す
-            return f"AIエラー: {data.get('error', {}).get('message', '不明な制限')}"
+            return f"AIエラー: {data.get('error', {}).get('message', '制限エラー')}"
     except Exception as e:
         return f"通信エラー: {str(e)}"
 
@@ -75,26 +77,26 @@ def main():
     market_info = get_detailed_market_data(is_morning)
     news_info = fetch_news_detailed()
 
-    # パート1：ニュース・テクニカル分析
-    prompt1 = f"米国株アナリストとして、以下のデータから【1.ニュース格付け】【2.NVDA・半導体分析】【3.政治・AI動向】を2000文字以上の超長文で執筆せよ。ニュース日付に言及し、絵文字多用で情熱的に書くこと。\nデータ:{market_info}\nニュース:{news_info}"
+    # パート1：分析編
+    prompt1 = f"米国株プロアナリストとして【ニュース格付け】【NVDA・半導体テクニカル分析】【政治・AI動向】を長文で執筆せよ。絵文字多用、ニュースの日付に言及すること。\nデータ:{market_info}\nニュース:{news_info}"
     part1 = call_ai(prompt1)
     
-    # 無料枠のRate Limit（連投制限）を避けるために30秒待機
-    time.sleep(30)
+    # 制限回避のため、長めの60秒待機
+    print("Waiting for 60 seconds to avoid rate limits...")
+    time.sleep(60)
 
-    # パート2：答え合わせ/予測
-    mode_text = "【朝の答え合わせ】的中判定と織り込み済みニュース分析" if is_morning else "【夕方のシナリオ予測】先物から読む3つの展望"
-    prompt2 = f"米国株アナリストとして、以下に基づき{mode_text}を2000文字以上の長文で執筆せよ。無視されたニュースやテクニカルな攻防を深く鋭く論じること。\nデータ:{market_info}"
+    # パート2：予測/答え合わせ編
+    mode_text = "【朝の答え合わせ】予測的中判定" if is_morning else "【夕方の今夜予想】3つの詳細シナリオ"
+    prompt2 = f"プロのアナリストとして{mode_text}を長文で執筆せよ。無視されたニュースや先物動向、テクニカルな心理戦を深く論じること。\nデータ:{market_info}"
     part2 = call_ai(prompt2)
 
-    full_report = f"📊 **Professional Report**\n{part1}\n\n{'='*20}\n\n{part2}"
+    full_report = f"📊 **US Stock Strategy Report**\n{part1}\n\n{'='*20}\n\n{part2}"
 
     if DISCORD_WEBHOOK_URL:
-        # 1700文字ずつに分割（Discordの制限に余裕を持たせる）
         chunks = [full_report[i:i+1700] for i in range(0, len(full_report), 1700)]
         for chunk in chunks:
             DiscordWebhook(url=DISCORD_WEBHOOK_URL, content=chunk).execute()
-            time.sleep(1) # Discord側のレート制限対策
+            time.sleep(2)
 
 if __name__ == "__main__":
     main()
