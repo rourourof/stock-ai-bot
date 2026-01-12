@@ -3,7 +3,7 @@ on:
   schedule:
     - cron: '0 21 * * 0-4'
     - cron: '0 9 * * 1-5'
-  workflow_dispatch: # 手動実行ボタンを表示
+  workflow_dispatch:
 
 jobs:
   build:
