@@ -1,18 +1,18 @@
 import os
 import yfinance as yf
 from newsapi import NewsApiClient
-from genai import Client  # 最新の google-genai ライブラリ
+from google import genai  # 正しいインポート名
 from discord_webhook import DiscordWebhook
 
-# APIキーの設定
+# APIキーの設定（GitHub ActionsのSecretsから取得）
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 
 def main():
-    # 1. ニュースの取得
+    # 1. ニュースの取得（News API）
     newsapi = NewsApiClient(api_key=NEWS_API_KEY)
-    queries = ["US Stock Market", "NVIDIA stock"]
+    queries = ["US Stock Market", "S&P 500", "NVIDIA"]
     all_news = ""
     
     try:
@@ -20,15 +20,15 @@ def main():
             result = newsapi.get_everything(q=q, language='en', sort_by='relevancy', page_size=2)
             for article in result['articles']:
                 all_news += f"- {article['title']}\n"
-    except:
-        all_news = "ニュースを取得できませんでした。"
+    except Exception as e:
+        all_news = "ニュースの取得に失敗しました。"
 
-    # 2. Geminiによる分析 (最新のClient方式)
-    # モデル名を 'gemini-1.5-flash' に修正
-    client = Client(api_key=GEMINI_API_KEY)
-    prompt = f"以下のニュースを日本語で要約し、投資コメントを絵文字付きで作って：\n{all_news}"
+    # 2. Gemini AI による分析（最新のClient方式）
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    prompt = f"以下の米国株ニュースを日本語で要約し、明日の予測を絵文字付きで楽しくレポートして：\n{all_news}"
     
     try:
+        # 404エラーを回避する最新の呼び出し方
         response = client.models.generate_content(
             model='gemini-1.5-flash', 
             contents=prompt
@@ -37,11 +37,11 @@ def main():
     except Exception as e:
         report = f"AI分析中にエラーが発生しました: {str(e)}"
 
-    # 3. Discordへ送信
+    # 3. Discordへの通知
     webhook = DiscordWebhook(url=DISCORD_WEBHOOK_URL, content=report)
     webhook.execute()
     
-    # 4. 結果を保存
+    # 4. 実行ログとして結果を保存
     with open("prediction.json", "w", encoding="utf-8") as f:
         f.write(report)
 
