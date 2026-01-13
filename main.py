@@ -8,149 +8,120 @@ import time
 from newsapi import NewsApiClient
 from discord_webhook import DiscordWebhook
 
-# ==========================================
-# 1. ニュース取得セクション（3つのソースから取得）
-# ==========================================
+# === 設定 ===
+OPENROUTER_API_KEY = os.getenv("GEMINI_API_KEY") 
+NEWS_API_KEY = os.getenv("NEWS_API_KEY")
+AV_API_KEY = os.getenv("AV_API_KEY") # Alpha Vantage追加
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 
-def fetch_all_news():
+def get_detailed_market_data():
+    targets = {"NVDA": "NVIDIA", "^SOX": "半導体指数", "ES=F": "S&P500先物", "NQ=F": "ナスダック100先物"}
+    report_data = ""
+    for ticker, name in targets.items():
+        try:
+            t = yf.Ticker(ticker)
+            hist = t.history(period="10d")
+            if len(hist) < 2: continue
+            curr = hist.iloc[-1]
+            prev = hist.iloc[-2]
+            change_pct = ((curr['Close'] - prev['Close']) / prev['Close']) * 100
+            sma5 = hist['Close'].rolling(window=5).mean().iloc[-1]
+            report_data += f"\n【{name} ({ticker})】\n- 価格: {curr['Close']:.2f} ({change_pct:+.2f}%)\n- 5日線乖離率: {((curr['Close']-sma5)/sma5)*100:+.2f}%\n"
+        except: pass
+    return report_data
+
+def fetch_multi_source_news():
     jst = pytz.timezone('Asia/Tokyo')
-    # 直近2日間の情報をターゲットにする
     start_date = (datetime.datetime.now(jst) - datetime.timedelta(days=2)).strftime('%Y-%m-%d')
-    
-    news_content = ""
+    collected = ""
 
-    # --- ソースA: NewsAPI (主要メディア) ---
+    # 1. NewsAPI (主要メディア)
     try:
-        api_key = os.getenv("NEWS_API_KEY")
-        if api_key:
-            newsapi = NewsApiClient(api_key=api_key)
-            # NVIDIAおよび米国市場に関する最新記事を取得
-            res = newsapi.get_everything(q="NVIDIA OR 'US Stock Market'", language='en', from_param=start_date, sort_by='publishedAt', page_size=8)
-            news_content += "\n【NewsAPI: 主要メディア速報】\n"
+        newsapi = NewsApiClient(api_key=NEWS_API_KEY)
+        queries = ["NVIDIA 2026", "US stock market 2026"]
+        for q in queries:
+            res = newsapi.get_everything(q=q, language='en', sort_by='publishedAt', from_param=start_date, page_size=5)
             for art in res.get('articles', []):
-                news_content += f"- {art['publishedAt']} | {art['source']['name']}: {art['title']}\n"
-    except Exception as e:
-        news_content += f"\n【NewsAPI】取得エラー: {e}\n"
+                if any(src in art['source']['name'] for src in ["Yahoo", "Reuters", "Bloomberg", "Wall Street Journal"]):
+                    collected += f"■[NewsAPI] {art['source']['name']}: {art['title']}\n"
+    except: pass
 
-    # --- ソースB: Alpha Vantage (金融センチメント分析) ---
+    # 2. Alpha Vantage (金融センチメント分析)
     try:
-        av_key = os.getenv("AV_API_KEY")
-        if av_key:
-            url = f"https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers=NVDA&apikey={av_key}"
-            r = requests.get(url, timeout=15)
-            data = r.json()
-            news_content += "\n【AlphaVantage: 投資家心理/センチメント】\n"
-            # 上位5件のセンチメント付きニュースを抽出
+        if AV_API_KEY:
+            url = f"https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers=NVDA&apikey={AV_API_KEY}"
+            data = requests.get(url, timeout=15).json()
             for item in data.get('feed', [])[:5]:
-                sentiment = item.get('overall_sentiment_label', '不明')
-                news_content += f"- {item['title']} (市場心理: {sentiment})\n"
-    except Exception as e:
-        news_content += f"\n【AlphaVantage】取得エラー: {e}\n"
+                sentiment = item.get('overall_sentiment_label', 'Neutral')
+                collected += f"■[AlphaVantage] {item['title']} (市場心理: {sentiment})\n"
+    except: pass
 
-    # --- ソースC: Google News (RSS/超速報) ---
+    # 3. Google News RSS (超速報)
     try:
-        news_content += "\n【Google News: リアルタイム検索結果】\n"
-        # 英語圏の最新情報を取得
         feed = feedparser.parse("https://news.google.com/rss/search?q=NVIDIA+stock+2026&hl=en-US&gl=US&ceid=US:en")
-        for entry in feed.entries[:6]:
-            news_content += f"- {entry.published} | {entry.title}\n"
-    except Exception as e:
-        news_content += f"\n【Google News】取得エラー: {e}\n"
+        for entry in feed.entries[:5]:
+            collected += f"■[GoogleNews] {entry.title}\n"
+    except: pass
 
-    return news_content
+    return collected
 
-# ==========================================
-# 2. 市場数値データ取得セクション
-# ==========================================
-
-def get_market_summary():
-    try:
-        # NVIDIAと主要指数の現在値を取得
-        tickers = {"NVDA": "NVIDIA", "^SOX": "半導体指数", "ES=F": "S&P500先物"}
-        summary = "\n【リアルタイム市場数値】\n"
-        for sym, name in tickers.items():
-            t = yf.Ticker(sym)
-            h = t.history(period="5d")
-            if len(h) < 2: continue
-            curr = h.iloc[-1]['Close']
-            prev = h.iloc[-2]['Close']
-            diff = ((curr - prev) / prev) * 100
-            summary += f"- {name}: {curr:.2f} ({diff:+.2f}%)\n"
-        return summary
-    except:
-        return "\n【市場数値】取得失敗\n"
-
-# ==========================================
-# 3. AI（Gemini）レポート作成 & 送信
-# ==========================================
+def call_gemini(prompt):
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json", "HTTP-Referer": "https://github.com/my-stock-ai"}
+    payload = {
+        "model": "google/gemini-2.0-flash-exp:free", 
+        "messages": [{"role": "user", "content": prompt}], 
+        "temperature": 0.0 
+    }
+    for attempt in range(3):
+        try:
+            res = requests.post(url, headers=headers, json=payload, timeout=180)
+            data = res.json()
+            if 'choices' in data: return data['choices'][0]['message']['content']
+            time.sleep(30) 
+        except: time.sleep(30)
+    return None
 
 def main():
-    # 日本時間の取得
     jst = pytz.timezone('Asia/Tokyo')
     now = datetime.datetime.now(jst)
-    date_str = now.strftime('%Y/%m/%d %H:%M')
+    current_time = now.strftime('%Y/%m/%d %H:%M')
+    is_morning = 5 <= now.hour <= 11
+    
+    market_info = get_detailed_market_data()
+    news_all = fetch_multi_source_news()
 
-    # 各種データの収集
-    factual_news = fetch_all_news()
-    market_data = get_market_summary()
-
-    # AIへの指示（プロンプト）
-    # temperature=0.0 により、提供データ以外の「嘘」を完全に封じる
     prompt = f"""
-あなたは機関投資家向けの【事実確認専門】ストラテジストです。
-本日: {date_str}
+あなたは機関投資家向けレポートを作成する【事実確認専門】のストラテジストです。
+現在は【{current_time}】です。
 
-【厳守：ハルシネーション（創作・仮説）の禁止】
-1. 下記の「実在ニュースデータ」および「市場数値」に記載されていない情報は、絶対にレポートに含めないでください。
-2. ニュースが不足している場合は、無理に内容を作らず、「特筆すべき新規ニュースなし」と事実を述べてください。
-3. 2024年や2025年の出来事を現在のニュースとして扱わないでください。
+【鉄の掟：ハルシネーションの禁止】
+1. 下記の「実在ニュースデータ」に記載されていない情報は、絶対にレポートに含めないでください。
+2. 「仮定のニュース」や「サンプルデータ」といった言葉は一切使わず、提供された情報のみを整理してください。
+3. ニュースが不足している場合は、無理に内容を膨らませず、数値データのテクニカル分析を重点的に行ってください。
 
-【提供された実在ニュースデータ】
-{factual_news}
+【市場数値データ】
+{market_info}
 
-【提供された市場数値データ】
-{market_data}
+【提供された実在ニュースソース（直近48時間）】
+{news_all}
 
-構成（冷静、客観的なトーンで執筆せよ）:
-1. 主要ニュースのファクト要約（どのソースからの情報か明記）
-2. 市場数値のテクニカル分析（乖離率や騰落）
-3. 事実に基づく今夜のマーケット見通し（論理的なシナリオ）
+【レポート構成】:
+1. **重要ファクトの抽出と評価**：各ソース（NewsAPI, AlphaVantage, GoogleNews）から事実を整理。
+2. **NVIDIA & 半導体セクター数値分析**：価格、移動平均乖離率を用いた客観的分析。
+3. **{'市場総括' if is_morning else '今夜のシナリオ予想'}**：メイン・強気・弱気の3区分。
+
+トーン：冷徹、客観的、簡潔。
 """
 
-    # Gemini APIへのリクエスト（OpenRouter経由）
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        print("APIキーが設定されていません。")
-        return
+    report = call_gemini(prompt)
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-    
-    payload = {
-        "model": "google/gemini-2.0-flash-exp:free",
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.0
-    }
-
-    try:
-        response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=120)
-        report = response.json()['choices'][0]['message']['content']
-
-        # Discordへ送信
-        webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
-        if webhook_url:
-            # 長文対策で分割送信
-            chunks = [report[i:i+1800] for i in range(0, len(report), 1800)]
-            for i, chunk in enumerate(chunks):
-                title = f"📑 **Institutional Daily Report ({date_str}) P{i+1}**\n" if i == 0 else ""
-                DiscordWebhook(url=webhook_url, content=title + chunk).execute()
-                time.sleep(1)
-        else:
-            print(report)
-    except Exception as e:
-        print(f"エラーが発生しました: {e}")
+    if report and DISCORD_WEBHOOK_URL:
+        chunks = [report[i:i+1900] for i in range(0, len(report), 1900)]
+        for i, chunk in enumerate(chunks):
+            header = f"📑 **Fact-Based Strategy Report ({current_time}) P{i+1}**\n" if i == 0 else ""
+            DiscordWebhook(url=DISCORD_WEBHOOK_URL, content=header + chunk).execute()
+            time.sleep(2)
 
 if __name__ == "__main__":
     main()
