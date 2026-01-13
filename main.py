@@ -24,34 +24,32 @@ def get_detailed_market_data():
             prev = hist.iloc[-2]
             change_pct = ((curr['Close'] - prev['Close']) / prev['Close']) * 100
             sma5 = hist['Close'].rolling(window=5).mean().iloc[-1]
-            report_data += f"\n【{name} ({ticker})】\n- 現在値: {curr['Close']:.2f} ({change_pct:+.2f}%)\n- 5日線乖離: {((curr['Close']-sma5)/sma5)*100:+.2f}%\n"
+            report_data += f"\n【{name} ({ticker})】\n- 終値/現在値: {curr['Close']:.2f} ({change_pct:+.2f}%)\n- 5日移動平均乖離率: {((curr['Close']-sma5)/sma5)*100:+.2f}%\n"
         except: pass
     return report_data
 
 def fetch_news_by_range(days):
-    """指定された日数範囲のニュースを取得"""
     newsapi = NewsApiClient(api_key=NEWS_API_KEY)
     jst = pytz.timezone('Asia/Tokyo')
     start_date = (datetime.datetime.now(jst) - datetime.timedelta(days=days)).strftime('%Y-%m-%d')
-    
-    queries = ["NVIDIA AI", "US Stock Market", "Semiconductor"]
+    queries = ["NVIDIA AI", "US Stock Market", "Semiconductor Industry"]
     collected = ""
     for q in queries:
         try:
-            res = newsapi.get_everything(q=q, language='en', sort_by='publishedAt', from_param=start_date, page_size=5)
+            res = newsapi.get_everything(q=q, language='en', sort_by='publishedAt', from_param=start_date, page_size=6)
             for art in res.get('articles', []):
                 utc_dt = datetime.datetime.strptime(art['publishedAt'], '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=pytz.utc)
                 jst_dt = utc_dt.astimezone(jst)
-                date_str = jst_dt.strftime('%Y/%m/%d %H:%M')
-                collected += f"■日時: {date_str} (JST)\nTITLE: {art['title']}\nDETAIL: {art.get('description','')[:150]}\n\n"
+                date_str = jst_dt.strftime('%m/%d %H:%M')
+                collected += f"■{date_str}(JST) {art['title']}: {art.get('description','')[:150]}\n"
         except: pass
     return collected
 
 def call_gemini(prompt):
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json", "HTTP-Referer": "https://github.com/my-stock-ai"}
-    payload = {"model": "google/gemini-2.0-flash-exp:free", "messages": [{"role": "user", "content": prompt}], "temperature": 0.7}
-
+    # 正確性を期すためtemperatureは0.3
+    payload = {"model": "google/gemini-2.0-flash-exp:free", "messages": [{"role": "user", "content": prompt}], "temperature": 0.3}
     for attempt in range(3):
         try:
             res = requests.post(url, headers=headers, json=payload, timeout=180)
@@ -64,53 +62,51 @@ def call_gemini(prompt):
 def main():
     jst = pytz.timezone('Asia/Tokyo')
     now = datetime.datetime.now(jst)
-    current_date_str = now.strftime('%Y/%m/%d %H:%M')
+    # 実行時の日付と時刻を動的に取得
+    current_time = now.strftime('%Y/%m/%d %H:%M')
     is_morning = 5 <= now.hour <= 11
     
     market_info = get_detailed_market_data()
-    # ニュースを2種類の期間で取得
-    news_weekly = fetch_news_by_range(7) # 1週間分の背景
-    news_latest = fetch_news_by_range(2) # 2日間の超最新
+    news_weekly = fetch_news_by_range(7) 
+    news_latest = fetch_news_by_range(2) 
 
-    mode = "朝：【答え合わせと週間展望】" if is_morning else "夕：【今夜のシナリオと週間トレンド】"
-
+    # プロンプト内の日付も変数(current_time)を使用するように変更
     prompt = f"""
-【鉄の掟：過去情報の完全排除】
-現在は【2026/01/13 {current_date_str}】です。
-あなたの記憶にある2024年や2025年の出来事は「歴史」であり、現在の材料ではありません。
-もし「2024年のAIバブル当初は〜」といった古い話を「現在のニュース」として混ぜた場合、このレポートは失格となります。
-提供された「2026年1月」のデータのみを使用してください。
+あなたは機関投資家向けのシニアストラテジストです。
+【本日の日付: {current_time} (JST)】
 
-あなたはシニアストラテジストとして、5000文字級の重厚な日本語レポートを作成してください。
+【厳守事項：事実に基づいた分析】
+- 過去の学習データ（2024年以前）に依拠せず、提供された最新データのみを用いて執筆してください。
+- 現在は2026年です。2024年や2025年の出来事を「最新ニュース」として扱うことは重大な誤報と見なします。
+- 提供されたニュースソースに存在しない製品発表や数値を捏造することは厳禁です。
+- 冷静で論理的な専門用語を使用してください。
 
-【1. 今週一週間のマクロ背景（株価に影響を与えている継続材料）】:
+【1. 週次マクロ環境（直近1週間の背景）】:
 {news_weekly}
 
-【2. 直近2日間の超最新ニュース（今すぐ動くべき材料）】:
+【2. 最新の市場動向（直近48時間の主要材料）】:
 {news_latest}
 
-【3. 市場数値データ】:
+【3. 株価・指数データ】:
 {market_info}
 
-【必須構成】:
-1. **今週の影響度格付けランキング**：1週間を通じた大きな流れを整理。
-2. **最新24-48時間のインパクト分析**：直近ニュースが今夜どう爆発するか。
-3. **NVIDIA & 半導体 集中講義**：テクニカルと最新材料の融合。
-4. **【重要】{'朝の的中判定' if is_morning else '今夜の3大シナリオ'}**
-5. **ニュースソース一覧（日時付き）**
+【構成要件】:
+1. **マクロ背景と重要ニュース格付け**：今週の流れを整理。
+2. **最新材料のインパクト評価**：直近ニュースが短期需給に与える影響。
+3. **NVIDIA & 半導体セクター分析**：数値に基づいた分析。
+4. **{'本日の市場総括' if is_morning else '今夜のマーケットシナリオ予測'}**：メイン・強気・弱気の3区分。
+5. **ニュースソース（日本時間日時付き）**
 
-【執筆ルール】：
-- 絵文字を多用し、投資家を鼓舞する熱量で。
-- 10分かけて読むボリューム（5000文字）を死守せよ。
-- すべての情報を「2026年現在の視点」で語れ。
+ルール：4000〜5000文字程度の詳密なレポート。正確性を最優先し、事実に即した洞察を行うこと。
 """
 
     report = call_gemini(prompt)
 
     if report and DISCORD_WEBHOOK_URL:
-        chunks = [report[i:i+1800] for i in range(0, len(report), 1800)]
+        chunks = [report[i:i+1900] for i in range(0, len(report), 1800)]
         for i, chunk in enumerate(chunks):
-            header = f"🚀 **US Strategy Report ({current_date_str}) Part {i+1}**\n" if i == 0 else ""
+            # タイトルの日付も自動更新
+            header = f"📑 **US Market Strategy Report ({current_time}) P{i+1}**\n" if i == 0 else ""
             DiscordWebhook(url=DISCORD_WEBHOOK_URL, content=header + chunk).execute()
             time.sleep(2)
 
