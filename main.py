@@ -1,113 +1,130 @@
-import os
-import requests
-import datetime
-import pytz
+import os, requests, datetime, pytz, time, feedparser
 import yfinance as yf
-import feedparser
-import time
+import pandas as pd
 from newsapi import NewsApiClient
 from discord_webhook import DiscordWebhook
 
-# === 設定 ===
-OPENROUTER_API_KEY = os.getenv("GEMINI_API_KEY") 
+# === API設定 ===
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
-AV_API_KEY = os.getenv("AV_API_KEY")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 
-def get_detailed_market_data():
-    targets = {"NVDA": "NVIDIA", "^SOX": "半導体指数", "ES=F": "S&P500先物", "NQ=F": "ナスダック100先物"}
-    report_data = ""
-    for ticker, name in targets.items():
+# --- 1. Pythonによる数値・テクニカル判定 (AI判断禁止領域) ---
+def get_market_data():
+    tickers = {"NVDA": "NVIDIA", "^SOX": "半導体指数(SOX)", "^IXIC": "NASDAQ"}
+    results = {}
+    
+    for sym, name in tickers.items():
         try:
-            t = yf.Ticker(ticker)
-            hist = t.history(period="10d")
-            if len(hist) < 2: continue
-            curr = hist.iloc[-1]
-            prev = hist.iloc[-2]
-            change_pct = ((curr['Close'] - prev['Close']) / prev['Close']) * 100
-            sma5 = hist['Close'].rolling(window=5).mean().iloc[-1]
-            report_data += f"\n【{name} ({ticker})】\n- 価格: {curr['Close']:.2f} ({change_pct:+.2f}%)\n- 5日線乖離率: {((curr['Close']-sma5)/sma5)*100:+.2f}%\n"
-        except: pass
-    return report_data
+            t = yf.Ticker(sym)
+            df = t.history(period="40d")
+            if len(df) < 22: continue
+            
+            curr, prev = df.iloc[-1], df.iloc[-2]
+            vol_avg20 = df['Volume'].iloc[-21:-1].mean()
+            
+            # 数値ロジック判定
+            results[sym] = {
+                "name": name,
+                "close": round(curr['Close'], 2),
+                "change_pct": round(((curr['Close'] - prev['Close']) / prev['Close']) * 100, 2),
+                "high": round(curr['High'], 2), "low": round(curr['Low'], 2),
+                "prev_high": round(prev['High'], 2), "prev_low": round(prev['Low'], 2),
+                "volume": int(curr['Volume']),
+                "vol_avg": int(vol_avg20),
+                "vol_status": "平均以上" if curr['Volume'] > vol_avg20 else "平均以下",
+                "range_judgment": "上抜け" if curr['Close'] > prev['High'] else ("下抜け" if curr['Close'] < prev['Low'] else "レンジ内")
+            }
+        except Exception as e: print(f"Data error {sym}: {e}")
+    
+    # 相対強弱判定
+    if "NVDA" in results and "^SOX" in results:
+        diff = results["NVDA"]["change_pct"] - results["^SOX"]["change_pct"]
+        results["NVDA"]["relative_strength"] = f"対SOX {diff:+.2f}% ({'強' if diff>0 else '弱'})"
+    
+    return results
 
-def fetch_multi_source_news():
+# --- 2. ニュース取得・分類 ---
+def fetch_news():
+    news_api = NewsApiClient(api_key=NEWS_API_KEY)
     jst = pytz.timezone('Asia/Tokyo')
-    start_date = (datetime.datetime.now(jst) - datetime.timedelta(days=2)).strftime('%Y-%m-%d')
-    collected = ""
-
-    # 1. NewsAPI
-    if NEWS_API_KEY:
-        try:
-            newsapi = NewsApiClient(api_key=NEWS_API_KEY)
-            res = newsapi.get_everything(q="NVIDIA 2026", language='en', sort_by='publishedAt', from_param=start_date, page_size=5)
-            for art in res.get('articles', []):
-                collected += f"■[NewsAPI] {art['source']['name']}: {art['title']}\n"
-        except: print("NewsAPI取得に失敗しました")
-
-    # 2. Alpha Vantage
-    if AV_API_KEY:
-        try:
-            url = f"https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers=NVDA&apikey={AV_API_KEY}"
-            data = requests.get(url, timeout=15).json()
-            for item in data.get('feed', [])[:5]:
-                sentiment = item.get('overall_sentiment_label', 'Neutral')
-                collected += f"■[AlphaVantage] {item['title']} ({sentiment})\n"
-        except: print("AlphaVantage取得に失敗しました")
-
-    # 3. Google News RSS
+    now = datetime.datetime.now(jst)
+    
+    context = {"latest": "", "politics": ""}
     try:
-        feed = feedparser.parse("https://news.google.com/rss/search?q=NVIDIA+stock+2026&hl=en-US&gl=US&ceid=US:en")
-        for entry in feed.entries[:5]:
-            collected += f"■[GoogleNews] {entry.title}\n"
-    except: print("GoogleNews取得に失敗しました")
+        # 過去24時間（速報）
+        res = news_api.get_everything(q="NVIDIA OR 'Federal Reserve' OR Semiconductor", language='en', sort_by='publishedAt', page_size=12)
+        for art in res.get('articles', []):
+            context["latest"] += f"・{art['title']} ({art['source']['name']})\n"
+    except: pass
+    return context
 
-    return collected
+# --- 3. フォールバック生成 (AI失敗時用) ---
+def fallback_report(m_data, time_tag):
+    report = f"━━━━━━━━━━━━━━━━━━\n【米国株 市場レビュー】{time_tag} JST\n━━━━━━━━━━━━━━━━━━\n"
+    report += "※システム制限により数値データのみ配信中\n\n"
+    for k, v in m_data.items():
+        report += f"■{v['name']}\n 価格:{v['close']} ({v['change_pct']}%)\n 出来高:{v['vol_status']}\n 判定:{v['range_judgment']}\n\n"
+    return report
 
+# --- 4. メインロジック ---
 def main():
     jst = pytz.timezone('Asia/Tokyo')
     now = datetime.datetime.now(jst)
-    current_time = now.strftime('%Y/%m/%d %H:%M')
     
-    # URLチェック（ログに出力）
-    if not DISCORD_WEBHOOK_URL:
-        print("エラー: DISCORD_WEBHOOK_URL が設定されていません。GitHub Secretsを確認してください。")
-    
-    market_info = get_detailed_market_data()
-    news_all = fetch_multi_source_news()
+    # 土曜配信停止 / 月曜朝は金曜の検証
+    if now.weekday() == 5: return 
 
-    prompt = f"あなたは機関投資家向けストラテジストです。現在:{current_time}\n【市場データ】\n{market_info}\n【ニュース】\n{news_all}\n上記を元に、事実のみを整理したレポートを4000文字程度で作成してください。"
-
-    # Gemini呼び出し
-    report = None
-    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
-    payload = {"model": "google/gemini-2.0-flash-exp:free", "messages": [{"role": "user", "content": prompt}], "temperature": 0.0}
+    is_morning = 5 <= now.hour <= 11
+    time_tag = "06:07" if is_morning else "18:07"
     
+    m_data = get_market_data()
+    n_data = fetch_news()
+
+    # プロンプト構築（制約の塊）
+    prompt = f"""
+あなたはプロの機関投資家向けストラテジストです。
+【米国株 市場レビュー】{time_tag} JST を執筆してください。
+
+【絶対遵守事項】
+1. NVIDIA(NVDA)と半導体セクター(^SOX)を「同一比重・同一分量」で分析すること。片方に偏ることは許されません。
+2. ニュースの「織り込み済み」かどうかの評価を必ず含めること。
+3. 政治・金融政策は「短期・中期・トレンド」の影響度を明示すること。
+4. 提供された数値データ（価格・出来高・判定）は一文字も変えずに使用すること。
+
+【役割】
+{'18:07：当日相場の整理と、3つのシナリオ（上昇・横ばい・下落）提示。条件と崩れる条件を明記。' if not is_morning else '06:07：前日のシナリオ検証と見立てのズレ、今日修正すべき視点の提示。'}
+
+【提供数値データ】
+{m_data}
+【実在ニュース】
+{n_data['latest']}
+
+【出力フォーマット】
+指定された見出し、免責事項、配信時刻を厳守。
+読了時間10分に相応しい情報密度で執筆せよ。
+"""
+
+    # AI呼び出し (Gemini 1.5 Flash - 安定性重視)
     try:
-        res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=120)
-        data = res.json()
-        if 'choices' in data:
-            report = data['choices'][0]['message']['content']
-            # デバッグ用：レポートの最初の100文字をログに表示
-            print(f"レポート作成成功: {report[:100]}...")
-        else:
-            print(f"Geminiエラー応答: {data}")
-    except Exception as e:
-        print(f"Gemini通信エラー: {e}")
+        headers = {"Authorization": f"Bearer {GEMINI_API_KEY}", "Content-Type": "application/json"}
+        payload = {"model": "google/gemini-1.5-flash", "messages": [{"role": "user", "content": prompt}], "temperature": 0.2}
+        res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=100)
+        report = res.json()['choices'][0]['message']['content']
+    except:
+        report = fallback_report(m_data, time_tag)
 
-    # Discord送信
-    if report and DISCORD_WEBHOOK_URL:
-        try:
-            chunks = [report[i:i+1900] for i in range(0, len(report), 1900)]
-            for i, chunk in enumerate(chunks):
-                header = f"📑 **Fact-Based Report ({current_time}) P{i+1}**\n" if i == 0 else ""
-                webhook = DiscordWebhook(url=DISCORD_WEBHOOK_URL, content=header + chunk)
-                response = webhook.execute()
-                print(f"Discord送信ステータス (P{i+1}): {response}")
-                time.sleep(1)
-        except Exception as e:
-            print(f"Discord送信エラー: {e}")
-    else:
-        print("レポートまたはWebhook URLが空のため、Discord送信をスキップしました。")
+    # 最終整形
+    final_post = f"━━━━━━━━━━━━━━━━━━\n【米国株 市場レビュー】{time_tag} JST\n（米国株 / 半導体・NVDA中心）\n━━━━━━━━━━━━━━━━━━\n"
+    final_post += report
+    final_post += f"\n\n━━━━━━━━━━━━━━━━━━\n配信時刻：{now.strftime('%Y-%m-%d %H:%M')} JST\n※ 自動生成 / 投資助言ではありません"
+
+    # Discord送信 (長文分割)
+    webhook = DiscordWebhook(url=DISCORD_WEBHOOK_URL, content="temp")
+    for i in range(0, len(final_post), 1950):
+        webhook.content = final_post[i:i+1950]
+        webhook.execute()
+        time.sleep(1)
 
 if __name__ == "__main__":
     main()
