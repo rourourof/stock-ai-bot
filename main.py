@@ -3,7 +3,6 @@ import requests
 import datetime
 import pytz
 import yfinance as yf
-import pandas as pd
 import time
 from newsapi import NewsApiClient
 from discord_webhook import DiscordWebhook
@@ -25,15 +24,16 @@ def get_detailed_market_data(is_morning):
             prev = hist.iloc[-2]
             change_pct = ((curr['Close'] - prev['Close']) / prev['Close']) * 100
             sma5 = hist['Close'].rolling(window=5).mean().iloc[-1]
-            report_data += f"\n【{name} ({ticker})】\n- 現在値: {curr['Close']:.2f} ({change_pct:+.2f}%)\n- 5日線乖離: {((curr['Close']-sma5)/sma5)*100:+.2f}%\n"
+            report_data += f"\n【{name} ({ticker})】\n- 価格: {curr['Close']:.2f} ({change_pct:+.2f}%)\n- 5日線乖離: {((curr['Close']-sma5)/sma5)*100:+.2f}%\n"
         except: pass
     return report_data
 
 def fetch_news_detailed():
     newsapi = NewsApiClient(api_key=NEWS_API_KEY)
     jst = pytz.timezone('Asia/Tokyo')
+    # 2024年の混入を防ぐため、物理的に「直近2日以内」の記事に限定
     start_date = (datetime.datetime.now(jst) - datetime.timedelta(days=2)).strftime('%Y-%m-%d')
-    queries = ["NVIDIA AI", "US Stock Market", "US China Politics"]
+    queries = ["NVIDIA AI", "US Stock Market", "Semiconductor"]
     collected = ""
     for q in queries:
         try:
@@ -43,55 +43,74 @@ def fetch_news_detailed():
         except: pass
     return collected
 
-def call_ai_with_fallback(prompt):
-    """Geminiを優先し、エラーならLlamaに切り替える"""
-    models = ["google/gemini-2.0-flash-exp:free", "meta-llama/llama-3.3-70b-instruct:free"]
-    for model in models:
+def call_gemini(prompt):
+    """Gemini 2.0 Flash専用のリトライ機能付き呼び出し"""
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://github.com/my-stock-ai"
+    }
+    payload = {
+        "model": "google/gemini-2.0-flash-exp:free",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.8
+    }
+
+    for attempt in range(3): # 最大3回リトライ
         try:
-            res = requests.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json", "HTTP-Referer": "https://github.com/my-stock-ai"},
-                json={"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.8},
-                timeout=180
-            )
+            res = requests.post(url, headers=headers, json=payload, timeout=180)
             data = res.json()
             if 'choices' in data:
-                return data['choices'][0]['message']['content'], model
-            print(f"{model} failed, trying next...")
-            time.sleep(5)
-        except: continue
-    return None, None
+                return data['choices'][0]['message']['content']
+            
+            # エラーメッセージ（Rate Limit等）が出た場合は少し待機してリトライ
+            print(f"Attempt {attempt+1} failed: {data.get('error', 'Unknown Error')}")
+            time.sleep(30 * (attempt + 1)) 
+        except Exception as e:
+            print(f"Connection error: {e}")
+            time.sleep(30)
+    return None
 
 def main():
     jst = pytz.timezone('Asia/Tokyo')
     now = datetime.datetime.now(jst)
-    day = now.strftime('%A')
+    current_date = now.strftime('%Y/%m/%d')
     is_morning = 5 <= now.hour <= 11
+    
     market_info = get_detailed_market_data(is_morning)
     news_info = fetch_news_detailed()
 
-    # モードと指示の構築（ユーザーの理想ロジックを継承）
-    if day == "Sunday":
-        mode = "日曜版：【今週の総括】全ニュースと値動きの徹底解剖"
-        instruction = "1週間の全材料を振り返り、来週の戦略を4000文字以上の圧倒的ボリュームで解説してください。"
-    elif is_morning:
-        mode = "平日朝：【前夜の答え合わせ】予想の的中検証と要因分析"
-        instruction = "昨夜の予測と実際の終値の的中判定、相場を動かした真の要因を分析せよ。"
-    else:
-        mode = "平日夕：【今夜のシナリオ予想】先物とテクニカルから読む展望"
-        instruction = "先物の動きから今夜の開場シナリオを予測し、メイン・強気・弱気の3段階予想を提示せよ。"
+    # モード判定と指示（あなたの理想ロジックを継承）
+    mode = "朝：【答え合わせ】" if is_morning else "夕：【シナリオ予想】"
+    instruction = "昨夜の的中判定と要因分析" if is_morning else "今夜のメイン・強気・弱気の3段階予想"
 
-    prompt = f"現在は2026/01/12です。米国株シニアストラテジストとして情熱的な5000文字級レポートを執筆せよ。\n【モード】{mode}\n【指示】{instruction}\n【データ】{market_info}\n【ニュース】{news_info}"
+    prompt = f"""
+現在は【{current_date}】です。過去の情報は捨て、最新データのみで執筆せよ。
+あなたは米国株のシニアストラテジストとして、5000文字級の情熱的なレポートを作成してください。
 
-    report, used_model = call_ai_with_fallback(prompt)
+【配信モード】: {mode}
+【市場データ】: {market_info}
+【ニュースソース】: {news_info}
+
+【必須構成】:
+1. **影響度ランキング**（ニュース格付け）
+2. **NVIDIA & 半導体別枠分析**（テクニカル・攻防予測）
+3. **政治・地政学・AI・対中政策**
+4. **{instruction}**
+
+ルール：絵文字多用。読むのに10分かかる圧倒的分量。詳細不明は厳禁。
+"""
+
+    report = call_gemini(prompt)
 
     if report and DISCORD_WEBHOOK_URL:
-        report += f"\n\n*(Model: {used_model})*"
+        # 1800文字ずつ分割送信
         chunks = [report[i:i+1800] for i in range(0, len(report), 1800)]
         for i, chunk in enumerate(chunks):
-            header = f"📊 **{mode} (Part {i+1}/{len(chunks)})**\n" if i == 0 else ""
+            header = f"📊 **Market Report Part {i+1}**\n" if i == 0 else ""
             DiscordWebhook(url=DISCORD_WEBHOOK_URL, content=header + chunk).execute()
-            time.sleep(1)
+            time.sleep(2)
 
 if __name__ == "__main__":
     main()
