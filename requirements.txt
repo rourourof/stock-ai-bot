@@ -1,1 +1,6 @@
-yfinance newsapi-python google-generativeai discord-webhook pandas pandas-ta
+newsapi-python
+feedparser
+requests
+yfinance
+discord-webhook
+pytz
