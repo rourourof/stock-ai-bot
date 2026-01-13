@@ -1,6 +1,7 @@
+yfinance
+pandas
 newsapi-python
 feedparser
 requests
-yfinance
 discord-webhook
 pytz
