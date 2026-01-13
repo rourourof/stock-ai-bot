@@ -1,0 +1,40 @@
+name: Financial Report Automation
+
+on:
+  schedule:
+    # 毎日 日本時間 06:07 (朝) と 18:07 (夕方) に実行
+    # UTC（世界標準時）で記述するため、9時間引いた時間を指定します。
+    - cron: '7 21 * * *'  # 日本時間 06:07 (前日21:07 UTC)
+    - cron: '7 9 * * *'   # 日本時間 18:07 (当日09:07 UTC)
+  workflow_dispatch:      # 手動で「実行ボタン」を押してテストすることも可能にする
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. あなたの書いた Python ファイルを GitHub サーバーへコピー
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # 2. Python 環境をセットアップ
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      # 3. 必要な「道具箱（ライブラリ）」をすべてインストール
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install newsapi-python feedparser requests yfinance discord-webhook pytz
+
+      # 4. プログラムを実行
+      # ここで GitHub Secrets に登録した各 API キーを環境変数として読み込みます
+      - name: Run script
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
+          AV_API_KEY: ${{ secrets.AV_API_KEY }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python main.py
