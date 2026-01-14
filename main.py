@@ -2,7 +2,7 @@ import os, requests, datetime, pytz, time
 import yfinance as yf
 from discord_webhook import DiscordWebhook
 
-# === 環境変数チェック ===
+# === 環境変数 ===
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 
@@ -21,67 +21,70 @@ def get_market_analysis():
         except: pass
     return results
 
-def call_openrouter_xiaomi(prompt):
-    model_name = "xiaomi/mimo-v2-flash:free"
+def call_ai_with_fallback(prompt):
+    # 無料で使える有力モデルのリスト（上から順に試します）
+    # 2026年現在、比較的空きやすい順番です
+    models = [
+        "google/gemini-2.0-flash-exp:free", # 最新かつ高性能
+        "xiaomi/mimo-v2-flash:free",        # 意外と穴場
+        "meta-llama/llama-3.1-8b-instruct:free" # 最後の砦
+    ]
+    
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
     }
-    payload = {
-        "model": model_name,
-        "messages": [
-            {"role": "system", "content": "あなたは金融アナリストです。日本語で回答してください。"},
-            {"role": "user", "content": prompt}
-        ]
-    }
 
-    for i in range(3):
+    for model in models:
         try:
-            res = requests.post(url, headers=headers, json=payload, timeout=60)
+            print(f"Trying {model}...")
+            payload = {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.5
+            }
+            res = requests.post(url, headers=headers, json=payload, timeout=40)
+            
             if res.status_code == 200:
+                print(f"Success with {model}!")
                 return res.json()['choices'][0]['message']['content']
-            elif res.status_code == 429:
-                time.sleep(65)
-        except:
-            time.sleep(5)
+            else:
+                print(f"Failed {model}: {res.status_code}")
+                # 混雑(429)なら少し待って次へ
+                time.sleep(2)
+        except Exception as e:
+            print(f"Error connecting to {model}: {e}")
+            continue
+            
     return None
 
 def main():
     jst = pytz.timezone('Asia/Tokyo')
     now = datetime.datetime.now(jst)
-    
-    # データの取得
     m_data = get_market_analysis()
     
-    # AIへの依頼
-    prompt = f"以下のデータを分析してレポートを書いてください：{m_data}"
-    report = call_openrouter_xiaomi(prompt)
-    
-    # --- Discord送信内容の組み立て ---
-    if not report:
-        report = "【数値速報】AIが混雑しているため、生データのみ配信します。"
+    # AIが答えやすいように「指示」を極限までシンプルにしました
+    prompt = f"プロの投資家として、以下のデータを日本語で簡潔に分析せよ（200文字以内）：{m_data}"
 
-    # 数値データ一覧（AIが失敗してもこれだけは表示される）
+    report = call_ai_with_fallback(prompt)
+    
+    # 最終的な表示内容
+    header = f"━━━━━━━━━━━━━━━━━━\n【市場レビュー】 {now.strftime('%m/%d %H:%M')}\n━━━━━━━━━━━━━━━━━━"
     data_text = "\n".join([f"■{v['name']}: {v['close']} ({v['change_pct']}%)" for v in m_data.values()])
     
-    final_output = (
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"【市場レビュー】{now.strftime('%m/%d %H:%M')}\n"
-        f"━━━━━━━━━━━━━━━━━━\n\n"
-        f"{data_text}\n\n"
-        f"--- AIによる考察 ---\n"
-        f"{report}"
-    )
-    
-    # Discord送信実行
-    if DISCORD_WEBHOOK_URL:
-        print("Attempting to send to Discord...")
-        webhook = DiscordWebhook(url=DISCORD_WEBHOOK_URL, content=final_output[:1950])
-        response = webhook.execute()
-        print(f"Discord Status Code: {response.status_code}")
+    footer = "--- AI Analysis ---\n"
+    if report:
+        footer += report
     else:
-        print("Error: DISCORD_WEBHOOK_URL is not set!")
+        footer += "※全ての無料モデルが混雑中のため、文章生成をスキップしました。"
+
+    final_output = f"{header}\n\n{data_text}\n\n{footer}\n\n※投資助言ではありません。"
+    
+    if DISCORD_WEBHOOK_URL:
+        webhook = DiscordWebhook(url=DISCORD_WEBHOOK_URL, content=final_output[:1950])
+        webhook.execute()
+        print("Done!")
 
 if __name__ == "__main__":
     main()
