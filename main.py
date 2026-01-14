@@ -31,8 +31,9 @@ def call_gemini_official(prompt):
         print("GOOGLE_API_KEYが設定されていません")
         return None
     
-    # 2026年時点で最も安定している v1beta を使用
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GOOGLE_API_KEY}"
+    # モデル名を最新の指定形式に修正
+    # v1beta ではなく v1 を使用（安定版）
+    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GOOGLE_API_KEY}"
     headers = {"Content-Type": "application/json"}
     
     payload = {
@@ -53,9 +54,9 @@ def call_gemini_official(prompt):
         res = requests.post(url, headers=headers, json=payload, timeout=120)
         data = res.json()
         
-        # エラー発生時の詳細ログ出力
+        # エラー詳細の出力
         if 'error' in data:
-            print(f"API Error: {data['error']['message']}")
+            print(f"Gemini API Error: {data['error'].get('message')}")
             return None
             
         if 'candidates' in data and len(data['candidates']) > 0:
@@ -63,13 +64,9 @@ def call_gemini_official(prompt):
             if 'content' in candidate:
                 return candidate['content']['parts'][0]['text']
             else:
-                # ブロックされた理由を表示
                 print(f"Finish Reason: {candidate.get('finishReason')}")
-                print(f"Safety Ratings: {candidate.get('safetyRatings')}")
                 return None
-        else:
-            print(f"Unexpected Response Format: {data}")
-            return None
+        return None
     except Exception as e:
         print(f"Request Exception: {e}")
         return None
@@ -79,26 +76,24 @@ def main():
     now = datetime.datetime.now(jst)
     if now.weekday() == 5: return 
     
-    is_morning = 5 <= now.hour <= 11
-    time_tag = "06:07" if is_morning else "18:07"
-    
+    time_tag = "06:07" if 5 <= now.hour <= 11 else "18:07"
     m_data = get_market_analysis()
     
-    prompt = f"""あなたは機関投資家向けストラテジストです。
-    市場データ: {m_data}
-    【条件】NVDAとSOXを同等の比重で分析し、冷徹なレビューを作成せよ。数値の捏造は厳禁。"""
+    # プロンプトを強化
+    prompt = f"機関投資家向けストラテジストとして、以下の市場データ {m_data} を分析し、NVDAと半導体指数(SOX)を同等の比重で扱った冷徹なレビューを4000文字程度で作成せよ。投資助言ではない免責文を末尾に含めること。"
 
     report = call_gemini_official(prompt)
     
+    # 失敗時のバックアップ
     if not report:
-        # AIが失敗した時のフォールバック文（「AI生成失敗」とは書かない掟）
-        report = "【市場数値概況】\n"
+        report = "【市場概況】AI生成が一時的に制限されたため、算出された数値データを配信します。\n\n"
         for v in m_data.values():
             report += f"■{v['name']}: {v['close']} ({v['change_pct']}%)\n 出来高:{v['vol_status']} / 判定:{v['range_judgment']}\n"
     
     final_output = f"━━━━━━━━━━━━━━━━━━\n【米国株 市場レビュー】{time_tag} JST\n━━━━━━━━━━━━━━━━━━\n\n{report}\n\n配信時刻：{now.strftime('%Y-%m-%d %H:%M')} JST"
     
     if DISCORD_WEBHOOK_URL:
+        # 2000文字制限対策の分割送信
         for i in range(0, len(final_output), 1950):
             DiscordWebhook(url=DISCORD_WEBHOOK_URL, content=final_output[i:i+1950]).execute()
             time.sleep(1)
