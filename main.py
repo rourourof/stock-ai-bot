@@ -3,7 +3,7 @@ import yfinance as yf
 from newsapi import NewsApiClient
 from discord_webhook import DiscordWebhook
 
-# === API設定（GitHub Secrets） ===
+# === 設定 ===
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
@@ -21,27 +21,26 @@ def get_market_analysis():
                 "name": name, "close": round(curr['Close'], 2),
                 "change_pct": round(((curr['Close'] - prev['Close']) / prev['Close']) * 100, 2),
                 "vol_status": "平均以上" if curr['Volume'] > vol_avg20 else "平均以下",
-                "range_judgment": "上抜け" if curr['Close'] > prev['High'] else ("下抜け" if curr['Close'] < prev['Low'] else "レンジ内"),
-                "high": round(curr['High'], 2), "low": round(curr['Low'], 2)
+                "range_judgment": "上抜け" if curr['Close'] > prev['High'] else ("下抜け" if curr['Close'] < prev['Low'] else "レンジ内")
             }
         except: pass
-    if "NVDA" in results and "^SOX" in results:
-        diff = results["NVDA"]["change_pct"] - results["^SOX"]["change_pct"]
-        results["NVDA"]["relative_strength"] = f"対SOX {diff:+.2f}% ({'強' if diff>0 else '弱'})"
     return results
 
-def fetch_news():
-    try:
-        res = NewsApiClient(api_key=NEWS_API_KEY).get_everything(q="NVIDIA OR 'Federal Reserve' OR Semiconductor", language='en', sort_by='publishedAt', page_size=12)
-        return "\n".join([f"・{a['title']} ({a['source']['name']})" for a in res.get('articles', [])])
-    except: return "ニュース取得制限中"
-
-def call_gemini(prompt):
-    # Gemini 1.5 Flash (安定・高速)
+def call_gemini_official(prompt):
+    if not GOOGLE_API_KEY:
+        print("GOOGLE_API_KEYが設定されていません")
+        return None
+    
+    # 2026年時点で最も安定している v1beta を使用
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GOOGLE_API_KEY}"
+    headers = {"Content-Type": "application/json"}
+    
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 3000},
+        "generationConfig": {
+            "temperature": 0.2,
+            "maxOutputTokens": 3000
+        },
         "safetySettings": [
             {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -49,41 +48,60 @@ def call_gemini(prompt):
             {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
         ]
     }
+    
     try:
-        res = requests.post(url, json=payload, timeout=100)
-        return res.json()['candidates'][0]['content']['parts'][0]['text']
+        res = requests.post(url, headers=headers, json=payload, timeout=120)
+        data = res.json()
+        
+        # エラー発生時の詳細ログ出力
+        if 'error' in data:
+            print(f"API Error: {data['error']['message']}")
+            return None
+            
+        if 'candidates' in data and len(data['candidates']) > 0:
+            candidate = data['candidates'][0]
+            if 'content' in candidate:
+                return candidate['content']['parts'][0]['text']
+            else:
+                # ブロックされた理由を表示
+                print(f"Finish Reason: {candidate.get('finishReason')}")
+                print(f"Safety Ratings: {candidate.get('safetyRatings')}")
+                return None
+        else:
+            print(f"Unexpected Response Format: {data}")
+            return None
     except Exception as e:
-        print(f"Gemini Error: {e}")
+        print(f"Request Exception: {e}")
         return None
 
 def main():
     jst = pytz.timezone('Asia/Tokyo')
     now = datetime.datetime.now(jst)
-    if now.weekday() == 5: return # 土曜休止
+    if now.weekday() == 5: return 
     
     is_morning = 5 <= now.hour <= 11
     time_tag = "06:07" if is_morning else "18:07"
     
     m_data = get_market_analysis()
-    n_data = fetch_news()
-
-    role_text = "前日の検証・振り返り" if is_morning else "当日相場の整理＋今夜の3シナリオ提示"
-    prompt = f"""ストラテジストとして執筆せよ。
-    【役割】{role_text}
-    【絶対条件】NVDAとSOXを同一比重で分析。ニュースは織り込み済みかを評価。政治・金融政策は短期・中期・トレンドを明示。
-    【数値データ】{m_data}
-    【最新ニュース】{n_data}
-    トーンは冷徹かつ簡潔に。"""
-
-    report = call_gemini(prompt)
-    if not report:
-        report = "※AI生成制限につき数値のみ配信\n\n" + "\n".join([f"■{v['name']}: {v['close']} ({v['change_pct']}%)\n 判定:{v['range_judgment']}" for v in m_data.values()])
-
-    final = f"━━━━━━━━━━━━━━━━━━\n【米国株 市場レビュー】{time_tag} JST\n（米国株 / 半導体・NVDA中心）\n━━━━━━━━━━━━━━━━━━\n\n{report}\n\n━━━━━━━━━━━━━━━━━━\n配信時刻：{now.strftime('%Y-%m-%d %H:%M')} JST\n※ 投資助言ではありません"
     
-    for i in range(0, len(final), 1950):
-        DiscordWebhook(url=DISCORD_WEBHOOK_URL, content=final[i:i+1950]).execute()
-        time.sleep(1)
+    prompt = f"""あなたは機関投資家向けストラテジストです。
+    市場データ: {m_data}
+    【条件】NVDAとSOXを同等の比重で分析し、冷徹なレビューを作成せよ。数値の捏造は厳禁。"""
+
+    report = call_gemini_official(prompt)
+    
+    if not report:
+        # AIが失敗した時のフォールバック文（「AI生成失敗」とは書かない掟）
+        report = "【市場数値概況】\n"
+        for v in m_data.values():
+            report += f"■{v['name']}: {v['close']} ({v['change_pct']}%)\n 出来高:{v['vol_status']} / 判定:{v['range_judgment']}\n"
+    
+    final_output = f"━━━━━━━━━━━━━━━━━━\n【米国株 市場レビュー】{time_tag} JST\n━━━━━━━━━━━━━━━━━━\n\n{report}\n\n配信時刻：{now.strftime('%Y-%m-%d %H:%M')} JST"
+    
+    if DISCORD_WEBHOOK_URL:
+        for i in range(0, len(final_output), 1950):
+            DiscordWebhook(url=DISCORD_WEBHOOK_URL, content=final_output[i:i+1950]).execute()
+            time.sleep(1)
 
 if __name__ == "__main__":
     main()
