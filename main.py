@@ -22,40 +22,39 @@ def get_market_analysis():
     return results
 
 def call_gemini_stable(prompt):
-    # 2026年現在、最も接続が安定している「正式版」モデル名
-    # exp(実験版)を避け、安定版を指定します
-    model_name = "gemini-2.0-flash" 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GOOGLE_API_KEY}"
+    # 2.0-flash を直接URLに埋め込む、最もエラーが出にくい形式
+    # 2026年時点での最新安定エンドポイント
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GOOGLE_API_KEY}"
     
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.5, "maxOutputTokens": 2500},
+        "generationConfig": {"temperature": 0.5, "maxOutputTokens": 3000},
         "safetySettings": [
             {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
         ]
     }
 
-    # クォータ制限(Limit 0)対策：20秒待機して再試行
-    for i in range(2):
+    # 429エラー(枠不足)に備えて3回リトライ
+    for i in range(3):
         try:
-            print(f"Connecting to Gemini (Attempt {i+1})...")
             response = requests.post(url, json=payload, timeout=60)
             data = response.json()
             
             if response.status_code == 200:
                 return data['candidates'][0]['content']['parts'][0]['text']
             
-            # 429(枠不足)が出た場合、30秒待つ
+            # 429(Quota)なら60秒待機
             if response.status_code == 429:
-                print("Quota limit hit. Waiting 30 seconds...")
-                time.sleep(30)
+                print(f"Attempt {i+1}: Quota exceeded. Waiting 60s...")
+                time.sleep(60)
                 continue
-            else:
-                print(f"API Error: {data.get('error', {}).get('message')}")
-                break
+            
+            # 404などその他のエラー
+            print(f"API Error {response.status_code}: {data.get('error', {}).get('message')}")
+            break
         except Exception as e:
             print(f"Exception: {e}")
-            time.sleep(5)
+            time.sleep(10)
     return None
 
 def main():
@@ -66,24 +65,21 @@ def main():
     time_tag = "06:07" if 5 <= now.hour <= 11 else "18:07"
     
     prompt = f"""
-機関投資家向けストラテジストとして、以下のデータを分析し、
-NVDAとSOXを対等に扱った、冷徹で重厚なレビューを日本語で執筆してください。
-【データ】{m_data}
-【条件】{'前日の取引検証' if time_tag == "06:07" else '今夜の相場シナリオ提示'}。
-末尾に「※投資助言ではありません」を付与。
+プロのストラテジストとして執筆せよ。
+データ：{m_data}
+条件：NVDAとSOXを対等に分析し、重厚な日本語レビューを出力。
+投資助言ではない旨を末尾に記載。
 """
 
     report = call_gemini_stable(prompt)
     
     if not report:
-        report = "【市場概況】AI接続が一時的に制限されたため、数値のみ配信します。\n\n"
-        for v in m_data.values():
-            report += f"■{v['name']}: {v['close']} ({v['change_pct']}%)\n 判定:{v['range_judgment']}\n"
+        report = "【市場概況】AI制限のため数値のみ配信します。\n\n" + str(m_data)
 
     final_output = f"━━━━━━━━━━━━━━━━━━\n【米国株 市場レビュー】{time_tag} JST\n━━━━━━━━━━━━━━━━━━\n\n{report}\n\n配信時刻：{now.strftime('%Y-%m-%d %H:%M')} JST"
     
     if DISCORD_WEBHOOK_URL:
-        # Discordの文字数制限対策
+        # 分割送信
         for i in range(0, len(final_output), 1900):
             DiscordWebhook(url=DISCORD_WEBHOOK_URL, content=final_output[i:i+1900]).execute()
             time.sleep(1)
